@@ -14,42 +14,71 @@
 #define NOT_POSITIVE_DEFINITE 1
 #define NON_POSITIVE_RESIDUAL_VARIANCE 2
 
- double fddot(double *x, double *y, int n);
-void fcov_xx(double *cov_xx, double **df, int npar, int nobs);
-void fcov_xy(double *cov_xy, double **df, int npar, int nobs);
+double calculate_rss(double *cov_xy, double *cov_xx, int npar);
+double fddot(double *x, double *y, int n);
+void   fcov_xx(double *cov_xx, double **df, int npar, int nobs);
+void   fcov_xy(double *cov_xy, double **df, double *y, int npar, int nobs);
 
 /* TODO */
-double bic_score(struct dataframe data, int *xy, int npar, double *fargs,
-                                        int *iargs)
+double bic_score(struct dataframe data, int x, int y, int *ypar, int npar,
+                                        double *fargs, int *iargs)
 {
-    /*
-     * The first thing we need to do is construct the (subset of the) dataframe
-     * that is relevent to x and its parents y
-     */
-    double * df[npar + 1];
-    for (int i = 0; i < npar + 1; ++i)
-        df[i] = data.df[xy[i]];
-    int    nobs    = data.nobs;
+    double **_x = malloc((npar + 1) * sizeof(double));
+    _x[0] = data.df[x];
+    for (int i = 0; i < npar; ++i)
+        _x[i + 1] = data.df[ypar[i]];
+    double *_y = data.df[y];
     double penalty = fargs[0];
-    int    err     = 0;
-    /* Allocate memory for cov_xx, cov_xy, and cov_xy_cpy in one block. */
-    double *alloced_mem = CALLOC(npar * (npar + 2), double);
-    if (alloced_mem == NULL)
+    /* Allocate memory for cov_xx and cov_xy in one block. */
+    double *plus_mem = malloc((npar + 1) * (npar + 2) * sizeof(double));
+    if (plus_mem == NULL)
         error("failed to allocate memory for BIC score\n");
-    double *cov_xx     = alloced_mem;
-    double *cov_xy     = alloced_mem + npar * npar;
-    /* Calculate the covariance matrix of the data matrix of the variables x */
-    fcov_xx(cov_xx, df, npar, nobs);
-    /* calculate the covariance vector between the single variable y and x */
-    fcov_xy(cov_xy, df, npar, nobs);
-    /*
-     * Now, we shall calcluate the BIC rss of this configuration by computing
-     * log(cov_xx - cov_xy**T cov_xx^-1 * cov_xy) + log(n) * (npar + 1). The
-     * first (and main step) in the rest of this function is to calcluate
-     * cov_xy**T cov_xx^-1 * cov_xy.  Note that because we all variables are
-     * normalized variables, cov_yy = 1
-     */
+    double *cov_xx_plus     = plus_mem;
+    double *cov_xy_plus     = plus_mem + (npar + 1) * (npar + 1);
+    double *minus_mem = malloc(npar  * (npar + 1) * sizeof(double));
+    if (minus_mem == NULL)
+        error("failed to allocate memory for BIC score\n");
+    double *cov_xx_minus     = minus_mem;
+    double *cov_xy_minus     = minus_mem + npar * npar;
+
+    /* Calculate the covariance matrix of the data matrix of x */
+    fcov_xx(cov_xx_plus, _x, npar + 1, data.nobs);
+    /* calculate the covariance vector between y and x */
+    fcov_xy(cov_xy_plus, _x, _y, npar + 1, data.nobs);
+
+
+
+    for (int i = 0; i < npar; ++i)
+        cov_xy_minus[i] = cov_xy_plus[i + 1];
+    for (int j = 0; j < npar; ++j) {
+        for (int i = 0; i < npar; ++i)
+            cov_xx_minus[i + j*npar] = cov_xx_plus[(i + 1) + (npar + 1) * (j + 1)];
+    }
+    double rss_plus  = calculate_rss(cov_xy_plus, cov_xx_plus, npar + 1);
+    double bic_plus  = data.nobs * log(rss_plus) +
+                         penalty * log(data.nobs) * (2 * (npar + 1) + 1);
+    double rss_minus = calculate_rss(cov_xy_minus, cov_xx_minus, npar);
+    double bic_minus = data.nobs * log(rss_minus) +
+                         penalty * log(data.nobs) * (2 * npar + 1);
+    free(plus_mem);
+    free(minus_mem);
+    return bic_plus - bic_minus;
+}
+
+
+/*
+ * Now, we shall calcluate the BIC rss of this configuration by computing
+ * log(cov_xx - cov_xy**T cov_xx^-1 * cov_xy) + log(n) * (npar + 1). The
+ * first (and main step) in the rest of this function is to calcluate
+ * cov_xy**T cov_xx^-1 * cov_xy.  Note that because we all variables are
+ * normalized variables, cov_yy = 1
+ */
+double calculate_rss(double *cov_xy, double *cov_xx, int npar)
+{
+    int    err = 0;
     double rss = 1.0f;
+    if (npar == 0)
+        return rss;
     if (npar == 1) {
         rss -= cov_xy[0] * cov_xy[0];
     }
@@ -95,7 +124,7 @@ double bic_score(struct dataframe data, int *xy, int npar, double *fargs,
             goto END; /* We can skip the next LAPACK routine */
         }
         /* We need to create a copy of cov_xy to perform the next subroutine */
-        double *cov_xy_cpy = alloced_mem + npar * (npar + 1);
+        double *cov_xy_cpy = malloc(npar * sizeof(double));
         memcpy(cov_xy_cpy, cov_xy, npar * sizeof(double));
         /* Now, we use the LAPACK routine dpotrs to solve the aforemention system
         * cov_xx * X = cov_xy. cov_xy_cpy is modified in place to be transformed
@@ -116,7 +145,6 @@ double bic_score(struct dataframe data, int *xy, int npar, double *fargs,
             rss -= fddot(cov_xy, cov_xy_cpy, npar);
         END: {};
     }
-    FREE(alloced_mem);
     if (rss < ERROR_THRESH) {
         err = NON_POSITIVE_RESIDUAL_VARIANCE;
     }
@@ -125,7 +153,7 @@ double bic_score(struct dataframe data, int *xy, int npar, double *fargs,
         warning("The augmented matrix xy is not of full rank!\n");
         return DBL_MAX;
     }
-    return nobs * log(rss) +  penalty * log(nobs) * (2 * npar + 1);
+    return rss;
 }
 
 /*
@@ -140,7 +168,7 @@ double bic_score(struct dataframe data, int *xy, int npar, double *fargs,
  */
 void fcov_xx(double *cov_xx, double **x, int npar, int nobs)
 {
-    double inv_nminus1 = 1.0f/(nobs - 1);
+    double inv_nminus1 = 1.0f/(nobs - 1.0f);
     for (int j = 0; j < npar; ++j) {
         double *x_j          = x[j];
         double *cov_xx_jnp = cov_xx + j * npar;
@@ -160,16 +188,15 @@ void fcov_xx(double *cov_xx, double **x, int npar, int nobs)
  * fcov_xy caclulates the covariance vector between the ranodom variable x
  * and the random variable vector, y.
  */
-void fcov_xy(double *cov_xy, double **df, int npar, int nobs)
+void fcov_xy(double *cov_xy, double **x, double *y, int npar, int nobs)
 {
-    double inv_nminus1 = 1.0f/(nobs - 1);
-    double *y          = df[npar];
+    double inv_nminus1 = 1.0f/(nobs - 1.0f);
     for (int i = 0 ; i < npar; ++i)
-        cov_xy[i] = fddot(df[i], y, nobs) * inv_nminus1;
+        cov_xy[i] = fddot(x[i], y, nobs) * inv_nminus1;
 }
 
 /* fddot should do reasonably fast dot products by employing loop unrolling */
- double fddot(double *x, double *y, int n)
+double fddot(double * restrict x, double * restrict y, int n)
 {
     int q = n / LOOP_UNROLL_SIZE;
     int r = n % LOOP_UNROLL_SIZE;
@@ -186,7 +213,7 @@ void fcov_xy(double *cov_xy, double **df, int npar, int nobs)
         psums[7] += x[i_lus + 7] * y[i_lus + 7];
     }
     q = q * LOOP_UNROLL_SIZE;
-    switch(r) {
+    switch (r) {
     case 7: psums[6] += x[q + 6] * y[q + 6];
     case 6: psums[5] += x[q + 5] * y[q + 5];
     case 5: psums[4] += x[q + 4] * y[q + 4];

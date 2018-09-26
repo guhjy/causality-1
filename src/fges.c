@@ -12,9 +12,8 @@
 #define DEBUG 1
 
 #ifndef DEBUG
-#define DEBUG 0
+#define DEBUG 1
 #endif
-
 
 struct gesrec {
     int   x;
@@ -28,51 +27,57 @@ struct gesrec {
 struct cgraph * ccf_fges(struct dataframe df, score_func score, double *fargs,
                                               int *iargs);
 
+struct dataframe calculate_df(SEXP Df, SEXP States) {
+    struct dataframe data;
+    data.nvar   = length(Df);
+    data.nobs   = length(VECTOR_ELT(Df, 0));
+    data.states = INTEGER(States);
+    data.df     = malloc(data.nvar * sizeof(void *));
+    for (int i = 0; i < data.nvar; ++i) {
+        SEXP Df_i = VECTOR_ELT(Df, i);
+        if (data.states[i])
+            data.df[i] = INTEGER(Df_i);
+        else
+            data.df[i] = REAL(Df_i);
+    }
+    return data;
+}
+
 SEXP ccf_fges_wrapper(SEXP Df, SEXP ScoreType, SEXP States,
-                               SEXP FloatingArgs, SEXP IntegerArgs)
+                 SEXP FloatingArgs, SEXP IntegerArgs)
 {
     /*
-     * calcluate the integer arguments and floating point arguments for the
-     * score function.
-     */
+    * calcluate the integer arguments and floating point arguments for the
+    * score function.
+    */
     int *iargs = NULL;
     if (!isNull(IntegerArgs))
         iargs = INTEGER(IntegerArgs);
     double *fargs = NULL;
     if (!isNull(FloatingArgs))
         fargs = REAL(FloatingArgs);
-    struct dataframe df;
-    df.nvar  = length(Df);
-    df.nobs  = length(VECTOR_ELT(Df, 0));
-    df.states = INTEGER(States);
-    df.df     = malloc(df.nvar * sizeof(void *));
+
     /* populate df with the pointers to the columns of the R dataframe */
-    int *states = df.states;
-    for (int i = 0; i < df.nvar; ++i) {
-        if (states[i])
-            df.df[i] = INTEGER(VECTOR_ELT(Df, i));
-        else
-            df.df[i] = REAL(VECTOR_ELT(Df, i));
-    }
-    score_func score;
-    if (!strcmp(CHAR(STRING_ELT(ScoreType, 0)), BIC_SCORE))
-        score = bic_score;
-    else if (!strcmp(CHAR(STRING_ELT(ScoreType, 0)), BDEU_SCORE))
-        score = bdeu_score;
-    else
-        error("nope\n");
+
+    struct dataframe data = calculate_df(Df, States);
+    score_func score = NULL;
+    // if (!strcmp(CHAR(STRING_ELT(ScoreType, 0)), BIC_SCORE))
+    //     score = bic_score;
+    // else if (!strcmp(CHAR(STRING_ELT(ScoreType, 0)), BDEU_SCORE))
+    //     score = bdeu_score;
+    // else
+    //     error("nope\n");
     /*
-     * All the preprocessing work has now been done, so lets instantiate
-     * an empty graph and run FGES
-     */
-    struct cgraph *cg = ccf_fges(df, score, fargs, iargs);
-
-
+    * All the preprocessing work has now been done, so lets instantiate
+    * an empty graph and run FGES
+    */
+    struct cgraph *cg = ccf_fges(data, score, fargs, iargs);
     /* POST PROCESSING */
     free_cgraph(cg);
-    free(df.df);
+    free(data.df);
     return ScalarReal(0);
 }
+
 
  int is_clique(struct cgraph *cg, int *nodes, int n_nodes)
 {
@@ -165,11 +170,11 @@ struct gesrec score_powerset(struct cgraph *cg, struct dataframe df,
         error("failed to allocate memory for naxy in fges!\n");
     memcpy(min_g.naxy, g.naxy, min_g.naxy_size * sizeof(int));
 
-    if (!is_clique(cg, min_g.naxy, min_g.naxy_size)) {
-        Rprintf("got ya!\n");
-        *dscore = min_ds;
-        return min_g;
-    }
+    // if (!is_clique(cg, min_g.naxy, min_g.naxy_size)) {
+    //     Rprintf("got ya!\n");
+    //     *dscore = min_ds;
+    //     return min_g;
+    // }
 
     /* saute in butter for best results */
     int *onion = malloc((g.naxy_size + g.set_size) * sizeof(int));
@@ -195,23 +200,20 @@ struct gesrec score_powerset(struct cgraph *cg, struct dataframe df,
         }
         if (is_valid_insertion(cg, g, onion, onion_size)) {
             struct ill *parents = cg->parents[g.y];
-            int new_npar = onion_size + ill_size(parents) + 1;
-            int *xy = malloc((new_npar + 1) * sizeof(int));
-            if (xy == NULL)
+            int         npar    = onion_size + ill_size(parents);
+            int        *ypar    = malloc(npar * sizeof(int));
+            if (ypar == NULL)
                 error("failed to allocate memory for xy in fges!\n");
-            xy[0]        = g.x;
-            xy[new_npar] = g.y;
             for (int j = 0; j < onion_size; ++j)
-                xy[1 + j] = onion[j];
-            int j = onion_size + 1;
+                ypar[j] = onion[j];
+            int j = onion_size;
             while (parents) {
-                xy[j]   = parents->key;
+                ypar[j] = parents->key;
                 parents = parents->next;
                 j++;
             }
-            double ds = score_diff(df, xy, xy + 1, new_npar, new_npar - 1,
-                                             fargs, iargs, score);
-            free(xy);
+            double ds = bic_score(df, g.x, g.y, ypar, npar, fargs, iargs);
+            free(ypar);
             if (ds < min_ds) {
                 min_ds = ds;
                 min_g.set_size = onion_size - g.naxy_size;
@@ -338,8 +340,7 @@ struct cgraph *ccf_fges(struct dataframe df, score_func score,
         double min     = DBL_MAX;
         int    arg_min = -1;
         for (int i = 0; i < j; ++i) {
-            int    xy[2] = {i, j};
-            double ds = score_diff(df, xy, NULL, 1, 0, fargs, iargs, score);
+            double ds = bic_score(df, i, j, NULL, 0, fargs, iargs);
             if (ds < min) {
                 min     = ds;
                 arg_min = i;
@@ -385,7 +386,7 @@ struct cgraph *ccf_fges(struct dataframe df, score_func score,
         free(visited);
         // connected_nodes(gesrecp->y, marked, nodes, &n_nodes, cg);
         if (DEBUG) {
-            // print_cgraph(cg);
+            print_cgraph(cg);
             for(int i = 0; i < n_nodes; ++i)
                 Rprintf("%i ", nodes[i]);
             Rprintf("\n");
