@@ -9,10 +9,10 @@
 #include <edgetypes.h>
 #include <stdint.h>
 
-#define DEBUG 1
+//#define DEBUG 1
 
 #ifndef DEBUG
-#define DEBUG 1
+#define DEBUG 0
 #endif
 
 struct gesrec {
@@ -364,17 +364,22 @@ struct cgraph *ccf_fges(struct dataframe df, score_func score,
         // int *nodes  = calloc(df.nvar, sizeof(int));
         int n_nodes = 0;
         int y = gesrecp->y;
+        int x = gesrecp->x;
         int *visited = meek_local(cg, &y, 1, &n_nodes);
-        // if(!visited[gesrecp->x]) {
-        //     visited[gesrecp->x] = 1;
-        //     n_nodes++;
-        // }
+        if(!visited[x] && gesrecords[x].y == y) {
+            visited[x] = 1;
+            n_nodes++;
+        }
+        if(!visited[y]) {
+            visited[y] = 1;
+            n_nodes++;
+        }
         for(int i = 0; i < gesrecp->set_size; ++i) {
             if(!visited[gesrecp->set[i]]) {
                 visited[gesrecp->set[i]] = 1;
                 n_nodes++;
             }
-        }
+}
         int *nodes = calloc(n_nodes, sizeof(int));
         int j = 0;
         for(int i = 0; i < df.nvar; ++i) {
